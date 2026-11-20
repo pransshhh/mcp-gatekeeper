@@ -12,8 +12,7 @@ import os
 
 import pytest
 
-from mcp_gatekeeper.daemon.decisions import Decider, with_timeout
-from mcp_gatekeeper.ipc import Action, DecisionRequest, Scope, Verdict
+from mcp_gatekeeper.ipc import Action, DecisionRequest, Scope
 from mcp_gatekeeper.ui.prompt import PromptQueue, UiDecider
 
 
@@ -27,11 +26,6 @@ def a_request(tool: str = "delete_file") -> DecisionRequest:
         params={"path": "/home/me/important.docx"},
         request_id=1,
     )
-
-
-async def ask(decider: Decider, request: DecisionRequest) -> Verdict:
-    """Adapter: Decider returns an Awaitable, create_task wants a Coroutine."""
-    return await decider(request)
 
 
 def test_queue_drains_everything_without_blocking():
@@ -91,41 +85,6 @@ async def test_answering_twice_is_harmless():
     (prompt,) = prompts.drain()
     prompt.answer(Action.ALLOW)
     prompt.answer(Action.BLOCK)  # a double click, or a race with a timeout
-
-    assert (await asking).allowed
-
-
-async def test_an_unanswered_prompt_fails_closed():
-    decider = with_timeout(UiDecider(PromptQueue()), 0.2, Action.BLOCK)
-    verdict = await decider(a_request())
-
-    assert not verdict.allowed
-    assert "nobody answered" in (verdict.reason or "")
-
-
-async def test_a_timeout_dismisses_the_dialog():
-    # The window watches `settled` to know when to close itself, so the
-    # timeout has to mark the prompt, not just return a verdict.
-    prompts = PromptQueue()
-    decider = with_timeout(UiDecider(prompts), 0.2, Action.BLOCK)
-
-    asking = asyncio.create_task(ask(decider, a_request()))
-    await asyncio.sleep(0.05)
-    (prompt,) = prompts.drain()
-    assert not prompt.settled
-
-    await asking
-    assert prompt.settled
-
-
-async def test_a_prompt_answered_in_time_is_not_timed_out():
-    prompts = PromptQueue()
-    decider = with_timeout(UiDecider(prompts), 5.0, Action.BLOCK)
-
-    asking = asyncio.create_task(ask(decider, a_request()))
-    await asyncio.sleep(0.05)
-    (prompt,) = prompts.drain()
-    prompt.answer(Action.ALLOW)
 
     assert (await asking).allowed
 

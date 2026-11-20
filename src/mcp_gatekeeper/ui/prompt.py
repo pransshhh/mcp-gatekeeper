@@ -135,11 +135,28 @@ class PromptWindow:
         self._arguments.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(2, 10))
         self._arguments.configure(state="disabled")
 
+        # Scope of the answer. Reset to "once" for every new request, so an
+        # "always" chosen for one tool can never leak onto the next one.
+        self._scope: tk.StringVar = tk.StringVar(value=Scope.ONCE.value)
+
+        scopes = ttk.Frame(frame)
+        scopes.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        for column, (label, value) in enumerate(
+            (
+                ("Just this once", Scope.ONCE.value),
+                ("This session", Scope.SESSION.value),
+                ("Always (any arguments)", Scope.ALWAYS.value),
+            )
+        ):
+            ttk.Radiobutton(scopes, text=label, value=value, variable=self._scope).grid(
+                row=0, column=column, padx=(0, 12)
+            )
+
         self._footer: ttk.Label = ttk.Label(frame, text="")
-        self._footer.grid(row=4, column=0, sticky="w")
+        self._footer.grid(row=5, column=0, sticky="w")
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=4, column=1, sticky="e")
+        buttons.grid(row=5, column=1, sticky="e")
 
         self._block_button: ttk.Button = ttk.Button(buttons, text="Block", command=self._on_block)
         self._block_button.grid(row=0, column=0, padx=(0, 8))
@@ -165,6 +182,11 @@ class PromptWindow:
     def headline(self) -> str:
         """The question currently on screen, for tests."""
         return cast("str", self._headline.cget("text"))
+
+    @property
+    def scope(self) -> str:
+        """The currently selected scope, for tests."""
+        return self._scope.get()
 
     @property
     def subtitle(self) -> str:
@@ -224,6 +246,9 @@ class PromptWindow:
         self._arguments.insert("1.0", display.to_text(request.params))
         self._arguments.configure(state="disabled")
 
+        # A fresh question gets a fresh scope.
+        self._scope.set(Scope.ONCE.value)
+
         self._root.deiconify()
         # typeshed's tkinter stubs leave these partially unknown.
         self._root.attributes("-topmost", True)  # pyright: ignore[reportUnknownMemberType]
@@ -256,7 +281,12 @@ class PromptWindow:
         prompt = self._current
         if prompt is None:
             return
-        prompt.answer(action)
+
+        try:
+            scope = Scope(self._scope.get())
+        except ValueError:
+            scope = Scope.ONCE
+        prompt.answer(action, scope)
         self._current = None
         if prompt in self._waiting:
             self._waiting.remove(prompt)

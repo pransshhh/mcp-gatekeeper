@@ -23,10 +23,15 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
+from mcp_gatekeeper import audit as audit_module
 from mcp_gatekeeper import ipc
-from mcp_gatekeeper.daemon.decisions import Decider, DecisionQueue, with_timeout
+from mcp_gatekeeper import policy as policy_module
+from mcp_gatekeeper.audit import AuditLog
+from mcp_gatekeeper.daemon.decisions import Decider, DecisionQueue
+from mcp_gatekeeper.daemon.gate import make_gate
 from mcp_gatekeeper.daemon.server import Daemon
 from mcp_gatekeeper.ipc import Action, DecisionRequest, Verdict
+from mcp_gatekeeper.policy import Policy
 
 # Below the client's own request timeout (around 60s in the MCP SDK), so the
 # user is never answering a question nobody is waiting for any more.
@@ -74,13 +79,26 @@ async def run_headless(path: Path, action: Action, delay: float) -> int:
     return 0
 
 
-def run_with_ui(path: Path, timeout: float, on_timeout: Action) -> int:
+def run_with_ui(
+    path: Path,
+    timeout: float,
+    on_timeout: Action,
+    *,
+    policy: Policy,
+    audit: AuditLog,
+) -> int:
     # Imported here so headless runs never need a display or tkinter.
     from mcp_gatekeeper.ui.prompt import PromptQueue, PromptWindow, UiDecider
 
     prompts = PromptQueue()
-    queue = DecisionQueue(with_timeout(UiDecider(prompts), timeout, on_timeout))
-    daemon = Daemon(queue, path)
+    gate = make_gate(
+        policy,
+        audit,
+        UiDecider(prompts),
+        timeout=timeout,
+        on_timeout=on_timeout,
+    )
+    daemon = Daemon(DecisionQueue(gate), path)
 
     # Event has no loop affinity at construction, so the main thread can make
     # it and the worker can wait on it.
@@ -150,6 +168,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help=f"socket path (default: {ipc.socket_path()})",
     )
+    parser.add_argument(
+        "--policy",
+        default=None,
+        help=f"rules file, read only (default: {policy_module.default_policy_path()})",
+    )
+    parser.add_argument(
+        "--remembered",
+        default=None,
+        help=(
+            "where 'always' choices are kept (default: "
+            + str(policy_module.default_remembered_path())
+            + ")"
+        ),
+    )
+    parser.add_argument(
+        "--audit",
+        default=None,
+        help=f"decision log (default: {audit_module.default_path()})",
+    )
     args = parser.parse_args(argv)
 
     raw_socket = cast("str | None", args.socket)
@@ -157,12 +194,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     raw_auto = cast("str | None", args.auto)
     if raw_auto is not None:
+        # Headless: no rules, no log, no display. Keeps the plumbing tests
+        # about the plumbing.
         return asyncio.run(run_headless(path, Action(raw_auto), cast("float", args.delay)))
+
+    raw_policy = cast("str | None", args.policy)
+    raw_remembered = cast("str | None", args.remembered)
+    raw_audit = cast("str | None", args.audit)
+
+    policy = Policy.load(
+        Path(raw_policy) if raw_policy else policy_module.default_policy_path(),
+        Path(raw_remembered) if raw_remembered else policy_module.default_remembered_path(),
+    )
+    audit = AuditLog(Path(raw_audit) if raw_audit else audit_module.default_path())
 
     return run_with_ui(
         path,
         cast("float", args.timeout),
         Action(cast("str", args.on_timeout)),
+        policy=policy,
+        audit=audit,
     )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from mcp_gatekeeper.ipc import Action, DecisionRequest, Verdict
+from mcp_gatekeeper.ipc import DecisionRequest, Verdict
 
 Decider = Callable[[DecisionRequest], Awaitable[Verdict]]
 """Something that answers one held request.
@@ -76,27 +76,3 @@ class DecisionQueue:
 
     def __len__(self) -> int:
         return len(self._items)
-
-
-def with_timeout(decider: Decider, seconds: float, on_timeout: Action) -> Decider:
-    """Wrap a decider so an unanswered request fails closed.
-
-    The timeout has to sit *below* the client's own request timeout (around 60
-    seconds in the MCP SDK). Otherwise the client gives up first and the user
-    ends up answering a question nobody is waiting for.
-
-    Cancelling the inner decider also cancels the future it was awaiting, which
-    is how the popup learns to dismiss itself.
-    """
-
-    async def decide(request: DecisionRequest) -> Verdict:
-        try:
-            return await asyncio.wait_for(decider(request), seconds)
-        except TimeoutError:
-            reason = (
-                "Blocked by MCP Gatekeeper: nobody answered within "
-                + f"{seconds:.0f} seconds, so the call was refused."
-            )
-            return Verdict(action=on_timeout, reason=reason)
-
-    return decide

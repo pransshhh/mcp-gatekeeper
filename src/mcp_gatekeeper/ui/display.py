@@ -73,14 +73,19 @@ def redact(value: object, *, _depth: int = 0) -> object:
     return value
 
 
-def digest(params: JSONObject) -> str:
-    """Short, stable fingerprint of the *original* arguments.
+DIGEST_CHARS = 12
 
-    Shown so a user can tell "this again" from "something new" without reading
-    the whole payload, and so the audit log and the dialog can be matched up.
+
+def digest(params: JSONObject, *, length: int = DIGEST_CHARS) -> str:
+    """Stable fingerprint of the *original* arguments.
+
+    Shown short in the dialog so a user can tell "this again" from "something
+    new" without reading the whole payload. The audit log stores the full hash,
+    and the dialog's 12 characters are its prefix, so the two can be matched up.
     """
     canonical = json.dumps(params, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    full = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return full[:length]
 
 
 def to_text(params: JSONObject) -> str:
