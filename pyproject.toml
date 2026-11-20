@@ -8,6 +8,9 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
+[project.scripts]
+mcp-gatekeeper = "mcp_gatekeeper.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]
 build-backend = "uv_build"
@@ -35,6 +38,9 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "T20"]
 
 [tool.ruff.lint.per-file-ignores]
+# Both of these legitimately write to a terminal. Everywhere else, stdout
+# carries protocol data and a stray print corrupts it.
+"src/mcp_gatekeeper/cli.py" = ["T20"]
 "tests/**" = ["T20"]
 
 [tool.basedpyright]
