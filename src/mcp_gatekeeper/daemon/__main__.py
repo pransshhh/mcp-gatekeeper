@@ -33,7 +33,9 @@ def make_auto_decider(action: Action, delay: float = 0.0) -> Decider:
     async def decide(_request: DecisionRequest) -> Verdict:
         if delay > 0:
             await asyncio.sleep(delay)
-        return Verdict(action=action, reason="auto")
+        # No reason: there is nothing to tell the user beyond the refusal
+        # itself, and a reason here would replace the standard wording.
+        return Verdict(action=action)
 
     return decide
 
