@@ -30,6 +30,8 @@ I started with each interceptor opening its own popup, but Desktop runs one proc
 - **Gated:** `tools/call`, `resources/read`, and server → client requests (`sampling/createMessage`, `elicitation/create`). A server asking Claude to run an inference for it is easy to miss if you only watch one direction.
 - **Not gated:** the handshake, `ping`, and the `*/list` discovery calls. Gating these breaks startup or floods the user with popups.
 
+This table is written against the `2025-06-18` shapes. Claude Desktop actually proposes `2025-11-25`, where server → client requests travel inside an "input-required" result rather than arriving standalone, so the interceptor records the negotiated version as the hook for version-aware gating later.
+
 ## The popup
 
 Always on top. It shows the server, the tool and the arguments, with **Allow** and **Block**. Arguments are shown as plain text and truncated, since they can contain prompt injection or huge padding meant to push Block off screen. Several pending requests are shown one at a time ("2 of 3") instead of stacked windows.
