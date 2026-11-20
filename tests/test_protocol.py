@@ -191,19 +191,6 @@ def test_denial_keeps_string_ids():
     assert p.build_denial("srv-1")["id"] == "srv-1"
 
 
-def test_encode_never_emits_a_stray_newline():
-    # A newline inside a string would split one frame into two and desync
-    # whoever is reading.
-    blob = p.encode({"text": "line one\nline two"})
-    assert blob.endswith(b"\n")
-    assert blob.count(b"\n") == 1
-
-
-def test_encode_round_trips():
-    payload = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
-    assert json.loads(p.encode(payload)) == payload
-
-
 def test_extract_protocol_version():
     request = p.classify(
         {

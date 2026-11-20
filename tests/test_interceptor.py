@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from mcp_gatekeeper import interceptor, protocol
+from mcp_gatekeeper import framing, interceptor, protocol
 from mcp_gatekeeper.protocol import Direction
 
 FAKE_SERVER = str(Path(__file__).parent / "fakes" / "server.py")
@@ -34,59 +34,6 @@ INITIALIZE: dict[str, Any] = {
 
 
 # --------------------------------------------------------------------------
-# iter_lines
-# --------------------------------------------------------------------------
-
-
-async def _reader_for(data: bytes, limit: int) -> asyncio.StreamReader:
-    reader = asyncio.StreamReader(limit=limit)
-    reader.feed_data(data)
-    reader.feed_eof()
-    return reader
-
-
-async def test_iter_lines_yields_frames():
-    reader = await _reader_for(b'{"a":1}\n{"b":2}\n', limit=64 * 1024)
-    lines = [line async for line in interceptor.iter_lines(reader)]
-    assert lines == [b'{"a":1}\n', b'{"b":2}\n']
-
-
-async def test_iter_lines_keeps_a_trailing_partial():
-    # A peer that dies mid-write still sent us something the other side would
-    # consider a frame.
-    reader = await _reader_for(b'{"a":1}\n{"b":2}', limit=64 * 1024)
-    lines = [line async for line in interceptor.iter_lines(reader)]
-    assert lines[-1] == b'{"b":2}'
-
-
-async def test_iter_lines_skips_blank_lines():
-    reader = await _reader_for(b'\n\n{"a":1}\n\n', limit=64 * 1024)
-    lines = [line async for line in interceptor.iter_lines(reader)]
-    assert lines == [b'{"a":1}\n']
-
-
-async def test_iter_lines_skips_oversized_and_recovers():
-    # The regression this guards: an earlier version drained a fixed chunk on
-    # overflow, which swallowed the *next* frame along with the bad one.
-    dropped: list[str] = []
-    reader = await _reader_for(b"x" * 5000 + b"\n" + b'{"ok":1}\n', limit=1024)
-
-    lines = [line async for line in interceptor.iter_lines(reader, on_drop=dropped.append)]
-
-    assert lines == [b'{"ok":1}\n']
-    assert len(dropped) == 1
-
-
-async def test_iter_lines_survives_oversized_line_at_eof():
-    dropped: list[str] = []
-    reader = await _reader_for(b"x" * 5000, limit=1024)
-
-    lines = [line async for line in interceptor.iter_lines(reader, on_drop=dropped.append)]
-
-    assert lines == []
-
-
-# --------------------------------------------------------------------------
 # Session.inspect
 # --------------------------------------------------------------------------
 
@@ -94,7 +41,7 @@ async def test_iter_lines_survives_oversized_line_at_eof():
 def test_inspect_captures_negotiated_version():
     session = interceptor.Session("demo")
     session.inspect(
-        protocol.encode({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}),
+        framing.encode({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}),
         Direction.SERVER_TO_CLIENT,
     )
     assert session.protocol_version == "2025-06-18"
@@ -104,7 +51,7 @@ def test_inspect_keeps_the_first_version_it_sees():
     session = interceptor.Session("demo")
     for version in ("2025-06-18", "2025-03-26"):
         session.inspect(
-            protocol.encode({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": version}}),
+            framing.encode({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": version}}),
             Direction.SERVER_TO_CLIENT,
         )
     assert session.protocol_version == "2025-06-18"
@@ -120,7 +67,7 @@ def test_inspect_tolerates_junk():
 def test_inspect_never_raises_on_a_batch():
     session = interceptor.Session("demo")
     session.inspect(
-        protocol.encode(
+        framing.encode(
             [
                 {"jsonrpc": "2.0", "id": 1, "method": "ping"},
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "x"}},
@@ -162,7 +109,7 @@ async def running(*server_args: str) -> AsyncGenerator[asyncio.subprocess.Proces
 
 async def _send(process: asyncio.subprocess.Process, payload: Any) -> None:
     assert process.stdin is not None
-    process.stdin.write(protocol.encode(payload))
+    process.stdin.write(framing.encode(payload))
     await process.stdin.drain()
 
 

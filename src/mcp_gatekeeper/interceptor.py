@@ -29,70 +29,18 @@ import asyncio
 import contextlib
 import signal
 import sys
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 from mcp_gatekeeper import protocol
+from mcp_gatekeeper.framing import MAX_LINE_BYTES, iter_lines
 from mcp_gatekeeper.protocol import Direction, MalformedLine
-
-# Nothing legitimate comes close. It exists so a broken or hostile peer cannot
-# make us buffer without limit.
-MAX_LINE_BYTES = 8 * 1024 * 1024
 
 # How long to let the server finish replying after the client goes away.
 DRAIN_SECONDS = 5.0
 
 # How long to wait for the server to exit before killing it.
 EXIT_SECONDS = 5.0
-
-
-async def iter_lines(
-    reader: asyncio.StreamReader,
-    *,
-    on_drop: Callable[[str], None] | None = None,
-) -> AsyncIterator[bytes]:
-    """Yield complete frames from a stream until EOF.
-
-    An oversized line is skipped rather than fatal: we resync at the next
-    newline and report it through `on_drop`. One hostile message should not
-    take down the session.
-    """
-    while True:
-        try:
-            line = await reader.readuntil(b"\n")
-        except asyncio.IncompleteReadError as exc:
-            # EOF. Anything buffered without a trailing newline is still a
-            # frame as far as the peer is concerned.
-            if exc.partial.strip():
-                yield exc.partial
-            return
-        except asyncio.LimitOverrunError as exc:
-            await _skip_to_newline(reader)
-            if on_drop is not None:
-                on_drop(f"dropped oversized line (over {exc.consumed} bytes)")
-            continue
-
-        if line.strip():
-            yield line
-
-
-async def _skip_to_newline(reader: asyncio.StreamReader) -> None:
-    """Discard bytes up to and including the next frame boundary.
-
-    The care here is deliberate. LimitOverrunError.consumed is the offset of
-    the separator when one was found, or the buffer size when it was not.
-    Dropping exactly that much and retrying resyncs us on the newline; reading
-    a fixed chunk instead swallows the *next* frame along with the bad one,
-    which looks fine until you test for it.
-    """
-    while True:
-        try:
-            await reader.readuntil(b"\n")
-            return
-        except asyncio.LimitOverrunError as exc:
-            await reader.readexactly(exc.consumed)
-        except asyncio.IncompleteReadError:
-            return
 
 
 async def _wait_for_stop(event: asyncio.Event) -> None:

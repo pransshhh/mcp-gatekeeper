@@ -121,6 +121,12 @@ def run_tool(name: str, arguments: JSONObject) -> JSONObject:
     return text_result(f"No such tool: {name}", is_error=True)
 
 
+def _spawn(message: JSONObject, emit_sampling: bool) -> threading.Thread:
+    thread = threading.Thread(target=handle, args=(message, emit_sampling), daemon=True)
+    thread.start()
+    return thread
+
+
 def handle(message: JSONObject, emit_sampling: bool) -> None:
     method = message.get("method")
     request_id = message.get("id")
@@ -194,6 +200,10 @@ def main() -> int:
 
     log("ready")
 
+    # Threads are daemons, so returning from main() would kill any still
+    # writing a reply. Keep them so we can wait for them on the way out.
+    workers: list[threading.Thread] = []
+
     for raw in sys.stdin:
         text = raw.strip()
         if not text:
@@ -207,9 +217,7 @@ def main() -> int:
 
         if isinstance(message, list):
             for item in message:
-                threading.Thread(
-                    target=handle, args=(item, args.emit_sampling), daemon=True
-                ).start()
+                workers.append(_spawn(item, args.emit_sampling))
             continue
 
         if "method" not in message:
@@ -217,9 +225,16 @@ def main() -> int:
             log(f"got a response to our request id={message.get('id')}")
             continue
 
-        threading.Thread(target=handle, args=(message, args.emit_sampling), daemon=True).start()
+        workers.append(_spawn(message, args.emit_sampling))
+        workers = [worker for worker in workers if worker.is_alive()]
 
-    log("stdin closed, exiting")
+    # Finish anything still in flight, or a reply gets dropped and whoever
+    # is waiting for it sees a short transcript.
+    log(f"stdin closed, waiting for {len(workers)} in-flight call(s)")
+    for worker in workers:
+        worker.join(timeout=30)
+
+    log("exiting")
     return 0
 
 

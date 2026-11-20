@@ -257,12 +257,3 @@ def build_denial(
         "id": request_id,
         "result": {"isError": True, "content": [{"type": "text", "text": text}]},
     }
-
-
-def encode(payload: object) -> bytes:
-    """Serialise one message back to a frame.
-
-    json.dumps escapes newlines inside strings, so a frame can never contain a
-    stray newline and desync whoever is reading.
-    """
-    return (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
