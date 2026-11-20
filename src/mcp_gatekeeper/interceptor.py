@@ -38,7 +38,7 @@ from typing import cast
 from mcp_gatekeeper import framing, ipc, protocol
 from mcp_gatekeeper.framing import MAX_LINE_BYTES, iter_lines
 from mcp_gatekeeper.ipc import Action, DaemonClient, DecisionRequest, IpcError, Verdict
-from mcp_gatekeeper.protocol import Direction, Line, MalformedLine, Message, RequestId
+from mcp_gatekeeper.protocol import Direction, Kind, Line, MalformedLine, Message, RequestId
 
 # How long to let the server finish replying after the client goes away.
 DRAIN_SECONDS = 5.0
@@ -64,6 +64,10 @@ class Session:
 
     def __init__(self, server_name: str) -> None:
         self.server_name: str = server_name
+        # What the client asked for, and what the server actually agreed to.
+        # These differ in practice: Claude Desktop proposes 2025-11-25 and a
+        # server may well answer with something older.
+        self.proposed_version: str | None = None
         self.protocol_version: str | None = None
         # (direction, jsonrpc id) -> decision id, so a cancellation can find
         # the decision it belongs to. Two servers both use id 1, which is why
@@ -78,11 +82,22 @@ class Session:
     def note(self, line: Line) -> None:
         """Record what can be learned from a frame on its way past."""
         for message in line.messages:
-            if self.protocol_version is None:
-                version = protocol.extract_protocol_version(message)
-                if version is not None:
+            version = protocol.extract_protocol_version(message)
+            if version is None:
+                continue
+
+            if message.kind is Kind.RESPONSE:
+                # The response is authoritative. It has to be allowed to
+                # overwrite the request's value, because the initialize
+                # request arrives first -- an earlier version of this took
+                # whatever it saw first and so always reported the client's
+                # proposal while calling it "negotiated".
+                if self.protocol_version != version:
                     self.protocol_version = version
                     self.log(f"negotiated protocolVersion={version}")
+            elif self.proposed_version is None:
+                self.proposed_version = version
+                self.log(f"client proposed protocolVersion={version}")
 
     def cancelled_ids(self, line: Line) -> list[RequestId]:
         """Request ids this frame is cancelling, if any."""

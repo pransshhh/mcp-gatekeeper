@@ -58,22 +58,45 @@ def note(session: interceptor.Session, payload: object) -> None:
     session.note(protocol.parse_line(framing.encode(payload)))
 
 
-def test_note_captures_the_negotiated_version():
+def test_note_records_the_negotiated_version_from_the_response():
     session = interceptor.Session("demo")
-    note(
-        session,
-        {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}},
-    )
+    note(session, {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}})
     assert session.protocol_version == "2025-06-18"
 
 
-def test_note_keeps_the_first_version_it_sees():
+def test_a_request_is_only_a_proposal():
     session = interceptor.Session("demo")
-    for version in ("2025-06-18", "2025-03-26"):
-        note(
-            session,
-            {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": version}},
-        )
+    note(
+        session,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25"},
+        },
+    )
+    assert session.proposed_version == "2025-11-25"
+    assert session.protocol_version is None
+
+
+def test_the_response_wins_over_the_proposal():
+    # The real sequence, and the bug this guards: the initialize request
+    # arrives first, so taking the first version seen reported the client's
+    # proposal while labelling it "negotiated". Claude Desktop proposes
+    # 2025-11-25; a server may answer with something older.
+    session = interceptor.Session("demo")
+    note(
+        session,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25"},
+        },
+    )
+    note(session, {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}})
+
+    assert session.proposed_version == "2025-11-25"
     assert session.protocol_version == "2025-06-18"
 
 
