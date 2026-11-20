@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -168,7 +169,7 @@ def test_describe_resource_read():
 
 
 def test_denial_defaults_to_tool_error():
-    denial = p.build_denial(7)
+    denial: Any = p.build_denial(7)
     assert denial["id"] == 7
     assert denial["result"]["isError"] is True
     assert "Blocked by MCP Gatekeeper" in denial["result"]["content"][0]["text"]
@@ -176,7 +177,7 @@ def test_denial_defaults_to_tool_error():
 
 
 def test_denial_as_jsonrpc_error():
-    denial = p.build_denial(7, mode="jsonrpc_error")
+    denial: Any = p.build_denial(7, mode="jsonrpc_error")
     assert denial["error"]["code"] == p.JSONRPC_BLOCKED
     assert "result" not in denial
 

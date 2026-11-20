@@ -12,7 +12,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "mypy>=2.4.1",
+    "basedpyright>=1.40.2",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.5.0",
     "ruff>=0.17.6",
@@ -33,7 +33,17 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "T20"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["T20"]
 
-[tool.mypy]
-python_version = "3.12"
-strict = true
-files = ["src"]
+[tool.basedpyright]
+pythonVersion = "3.12"
+include = ["src", "tests"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportAny = false
+reportExplicitAny = false
+reportMissingParameterType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+reportUnusedCallResult = false
