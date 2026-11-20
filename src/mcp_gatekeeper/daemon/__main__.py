@@ -98,11 +98,23 @@ def run_with_ui(path: Path, timeout: float, on_timeout: Action) -> int:
     thread.start()
 
     window = PromptWindow(prompts, timeout_seconds=timeout)
+
+    def on_signal(_signum: int, _frame: object) -> None:
+        window.request_stop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(OSError, ValueError):
+            signal.signal(sig, on_signal)
+
     try:
         window.run()
+    except KeyboardInterrupt:
+        pass
     finally:
         loop.call_soon_threadsafe(stopping.set)
         thread.join(timeout=10)
+        with contextlib.suppress(Exception):
+            window.close()
 
     return 0
 
