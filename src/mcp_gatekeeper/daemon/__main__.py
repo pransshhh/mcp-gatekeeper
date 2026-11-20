@@ -1,14 +1,15 @@
 """Run the daemon.
 
-    python -m mcp_gatekeeper.daemon --auto allow
+    python -m mcp_gatekeeper.daemon                  # with the popup
+    python -m mcp_gatekeeper.daemon --auto allow     # headless, for tests
 
-There is no popup yet. `--auto` answers every request the same way, which
-keeps this stage about the plumbing: if the round trip works under --auto,
-what is left is purely a UI problem.
+With no --auto, every held request raises a window and waits for a click.
+--auto answers everything the same way instead, which is what the test suite
+and CI use: no display needed, and it keeps those tests about the plumbing.
 
-`--delay` fakes a slow human. Use it to prove that holding one request does
-not stall anything else -- the failure that would make the finished tool feel
-broken.
+Threading, because Tk insists on the main thread: the window runs there and
+the asyncio loop runs on a worker. The two only speak through the queue in
+mcp_gatekeeper.ui.prompt.
 """
 
 from __future__ import annotations
@@ -17,14 +18,19 @@ import argparse
 import asyncio
 import contextlib
 import signal
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 from mcp_gatekeeper import ipc
-from mcp_gatekeeper.daemon.decisions import Decider, DecisionQueue
+from mcp_gatekeeper.daemon.decisions import Decider, DecisionQueue, with_timeout
 from mcp_gatekeeper.daemon.server import Daemon
 from mcp_gatekeeper.ipc import Action, DecisionRequest, Verdict
+
+# Below the client's own request timeout (around 60s in the MCP SDK), so the
+# user is never answering a question nobody is waiting for any more.
+DEFAULT_TIMEOUT = 45.0
 
 
 def make_auto_decider(action: Action, delay: float = 0.0) -> Decider:
@@ -40,7 +46,21 @@ def make_auto_decider(action: Action, delay: float = 0.0) -> Decider:
     return decide
 
 
-async def run(path: Path, action: Action, delay: float) -> int:
+async def _serve_until(daemon: Daemon, stopping: asyncio.Event) -> None:
+    await daemon.start()
+    serving = asyncio.create_task(daemon.serve())
+    try:
+        await stopping.wait()
+    finally:
+        # stop() first: it drops live connections, which is what allows the
+        # serve task to unwind instead of blocking on wait_closed().
+        await daemon.stop()
+        serving.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serving
+
+
+async def run_headless(path: Path, action: Action, delay: float) -> int:
     queue = DecisionQueue(make_auto_decider(action, delay))
     daemon = Daemon(queue, path)
 
@@ -50,17 +70,40 @@ async def run(path: Path, action: Action, delay: float) -> int:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stopping.set)
 
-    await daemon.start()
-    server = asyncio.create_task(daemon.serve())
+    await _serve_until(daemon, stopping)
+    return 0
+
+
+def run_with_ui(path: Path, timeout: float, on_timeout: Action) -> int:
+    # Imported here so headless runs never need a display or tkinter.
+    from mcp_gatekeeper.ui.prompt import PromptQueue, PromptWindow, UiDecider
+
+    prompts = PromptQueue()
+    queue = DecisionQueue(with_timeout(UiDecider(prompts), timeout, on_timeout))
+    daemon = Daemon(queue, path)
+
+    # Event has no loop affinity at construction, so the main thread can make
+    # it and the worker can wait on it.
+    stopping = asyncio.Event()
+    loop = asyncio.new_event_loop()
+
+    def worker() -> None:
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_serve_until(daemon, stopping))
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=worker, name="gatekeeper-daemon", daemon=True)
+    thread.start()
+
+    window = PromptWindow(prompts, timeout_seconds=timeout)
     try:
-        await stopping.wait()
+        window.run()
     finally:
-        # stop() first: it drops live connections, which is what allows the
-        # serve task to unwind instead of blocking on wait_closed().
-        await daemon.stop()
-        server.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await server
+        loop.call_soon_threadsafe(stopping.set)
+        thread.join(timeout=10)
+
     return 0
 
 
@@ -69,14 +112,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--auto",
         choices=[Action.ALLOW.value, Action.BLOCK.value],
-        default=Action.ALLOW.value,
-        help="answer every request this way (there is no popup yet)",
+        default=None,
+        help="skip the popup and answer every request this way (for tests)",
     )
     parser.add_argument(
         "--delay",
         type=float,
         default=0.0,
-        help="seconds to wait before answering, to fake a slow human",
+        help="with --auto, seconds to wait before answering, to fake a slow human",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help="seconds to wait for a click before refusing",
+    )
+    parser.add_argument(
+        "--on-timeout",
+        choices=[Action.BLOCK.value, Action.ALLOW.value],
+        default=Action.BLOCK.value,
+        help="what an unanswered request becomes; allow is dangerous",
     )
     parser.add_argument(
         "--socket",
@@ -85,12 +140,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    raw_socket = cast(str | None, args.socket)
+    raw_socket = cast("str | None", args.socket)
     path = Path(raw_socket) if raw_socket else ipc.socket_path()
-    action = Action(cast(str, args.auto))
-    delay = cast(float, args.delay)
 
-    return asyncio.run(run(path, action, delay))
+    raw_auto = cast("str | None", args.auto)
+    if raw_auto is not None:
+        return asyncio.run(run_headless(path, Action(raw_auto), cast("float", args.delay)))
+
+    return run_with_ui(
+        path,
+        cast("float", args.timeout),
+        Action(cast("str", args.on_timeout)),
+    )
 
 
 if __name__ == "__main__":
