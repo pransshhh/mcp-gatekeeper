@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from mcp-gatekeeper!")
+"""Ask before any MCP tool call runs."""
