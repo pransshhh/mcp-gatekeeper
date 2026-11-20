@@ -36,6 +36,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "T20"]
 [tool.basedpyright]
 pythonVersion = "3.12"
 include = ["src", "tests"]
+# Fires on write(), flush(), cancel(), add_argument() and friends -- calls whose
+# return value nobody wants. Not worth an `_ =` on every line.
+reportUnusedCallResult = false
 
 [[tool.basedpyright.executionEnvironments]]
 root = "tests"
@@ -46,4 +49,3 @@ reportUnknownArgumentType = false
 reportUnknownMemberType = false
 reportUnknownParameterType = false
 reportUnknownVariableType = false
-reportUnusedCallResult = false
