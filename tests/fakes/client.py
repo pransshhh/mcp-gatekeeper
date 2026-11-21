@@ -148,7 +148,25 @@ def summarise(reply: JSONObject) -> str:
     return f"ok: {text}" if text else f"ok: {json.dumps(result)[:120]}"
 
 
-async def scenario(client: Client) -> None:
+async def two_at_once(client: Client) -> None:
+    """Fire two calls simultaneously and report which came back first."""
+    log("")
+    log("--- two at once (slow_task must not block send_email) ---")
+    slow = asyncio.create_task(
+        client.request("tools/call", {"name": "slow_task", "arguments": {"seconds": 3}})
+    )
+    fast = asyncio.create_task(
+        client.request(
+            "tools/call",
+            {"name": "send_email", "arguments": {"to": "someone@example.com", "subject": "hi"}},
+        )
+    )
+
+    log(f"<-- send_email: {summarise(await fast)}")
+    log(f"<-- slow_task: {summarise(await slow)}")
+
+
+async def scenario(client: Client, *, concurrent: bool = False) -> None:
     reply = await client.request(
         "initialize",
         {
@@ -166,6 +184,12 @@ async def scenario(client: Client) -> None:
     names = [tool["name"] for tool in (reply.get("result") or {}).get("tools", [])]
     log(f"<-- tools/list: {names}")
 
+    if concurrent:
+        # Straight to the pair. Used when demonstrating concurrency, where
+        # clicking through the single calls first adds nothing.
+        await two_at_once(client)
+        return
+
     log("")
     log("--- single safe call ---")
     reply = await client.request(
@@ -180,20 +204,7 @@ async def scenario(client: Client) -> None:
     )
     log(f"<-- delete_file: {summarise(reply)}")
 
-    log("")
-    log("--- two at once (slow_task must not block send_email) ---")
-    slow = asyncio.create_task(
-        client.request("tools/call", {"name": "slow_task", "arguments": {"seconds": 3}})
-    )
-    fast = asyncio.create_task(
-        client.request(
-            "tools/call",
-            {"name": "send_email", "arguments": {"to": "someone@example.com", "subject": "hi"}},
-        )
-    )
-
-    log(f"<-- send_email: {summarise(await fast)}")
-    log(f"<-- slow_task: {summarise(await slow)}")
+    await two_at_once(client)
 
     log("")
     log("--- ping (should still be responsive) ---")
@@ -204,9 +215,15 @@ async def scenario(client: Client) -> None:
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--concurrent",
+        action="store_true",
+        help="fire only the two simultaneous calls, skipping the single ones",
+    )
+    parser.add_argument(
         "command", nargs=argparse.REMAINDER, help="the server command, after a -- separator"
     )
-    command = parser.parse_args().command
+    args = parser.parse_args()
+    command = args.command
 
     if command and command[0] == "--":
         command = command[1:]
@@ -226,7 +243,7 @@ async def main() -> int:
     reader = asyncio.create_task(client.read_loop())
 
     try:
-        await asyncio.wait_for(scenario(client), timeout=120)
+        await asyncio.wait_for(scenario(client, concurrent=args.concurrent), timeout=120)
     except TimeoutError:
         log("scenario timed out")
         return 1
