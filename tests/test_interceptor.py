@@ -174,6 +174,21 @@ async def running(
 
 
 @asynccontextmanager
+async def daemon_on(socket: Path, action: Action = Action.ALLOW) -> AsyncGenerator[Daemon]:
+    """A daemon listening on `socket`, stopped on the way out."""
+    daemon = Daemon(DecisionQueue(make_auto_decider(action)), socket)
+    await daemon.start()
+    serving = asyncio.create_task(daemon.serve())
+    try:
+        yield daemon
+    finally:
+        await daemon.stop()
+        serving.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serving
+
+
+@asynccontextmanager
 async def gatekeeper(
     tmp_path: Path, action: Action = Action.ALLOW, delay: float = 0.0
 ) -> AsyncGenerator[tuple[asyncio.subprocess.Process, Daemon]]:
@@ -389,3 +404,41 @@ async def test_passes_through_output_it_cannot_parse(tmp_path: Path):
             await serving
 
     assert any(b"starting up" in line for line in raw)
+
+
+async def test_survives_a_daemon_that_starts_late_and_restarts(tmp_path: Path):
+    """The operational requirement: a daemon restart must not mean restarting
+    Claude Desktop.
+
+    Connection state cannot be predicted -- a Unix socket whose peer has died
+    still looks writable -- so the interceptor reconnects in reaction to a
+    failed ask rather than by polling. All four phases matter: refuse when
+    there is nobody to ask, recover when there is, and do it again.
+    """
+    socket = tmp_path / "d.sock"
+
+    async with running(socket=socket) as process:
+        await handshake(process)
+
+        # Phase 1: no daemon at all. Fail closed.
+        await send(process, call(2, "delete_file", path="/tmp/x"))
+        assert result_of(await frame(process)).get("isError") is True
+
+        # Phase 2: the daemon arrives late.
+        async with daemon_on(socket):
+            await send(process, call(3, "delete_file", path="/tmp/x"))
+            assert result_of(await frame(process)).get("isError") is False
+
+        # Phase 3: it goes away again.
+        await send(process, call(4, "delete_file", path="/tmp/x"))
+        assert result_of(await frame(process)).get("isError") is True
+
+        # Phase 4: and comes back.
+        async with daemon_on(socket):
+            await send(process, call(5, "delete_file", path="/tmp/x"))
+            assert result_of(await frame(process)).get("isError") is False
+
+        stderr = await finish(process)
+
+    # It said so at startup rather than giving up.
+    assert "will retry on demand" in stderr

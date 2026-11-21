@@ -256,21 +256,48 @@ class Proxy:
 
         client = self.client
         if client is None:
-            return self._unavailable("no connection to the daemon")
+            return self._unavailable("no daemon configured for this platform")
 
         key = (direction, message.id)
         self.session.held[key] = request.id
         self.session.log(f"holding {direction.value} {message.method} id={message.id} ({label})")
 
         try:
-            verdict = await client.ask(request)
-        except IpcError as exc:
-            return self._unavailable(str(exc))
+            verdict = await self._ask_daemon(client, request)
         finally:
             self.session.held.pop(key, None)
 
         self.session.log(f"{verdict.action.value}: {label} id={message.id}")
         return verdict
+
+    async def _ask_daemon(self, client: DaemonClient, request: DecisionRequest) -> Verdict:
+        """Ask the daemon, reconnecting if the connection turns out to be dead.
+
+        Two attempts, because connection state cannot be predicted: a Unix
+        socket whose peer has gone still looks writable until you actually
+        write to it, so the only reliable signal is a failure. The daemon may
+        also have started *after* us, or restarted since -- neither should mean
+        refusing everything until Claude Desktop is restarted.
+        """
+        detail = "daemon not reachable"
+
+        for final in (False, True):
+            try:
+                was_connected = client.connected
+                await client.ensure_connected()
+                if not was_connected:
+                    self.session.log(f"connected to the daemon at {client.path}")
+                return await client.ask(request)
+            except (IpcError, NotImplementedError) as exc:
+                detail = str(exc)
+                if final:
+                    break
+                # Drop whatever we have so the next attempt genuinely
+                # reconnects rather than reusing a corpse.
+                with contextlib.suppress(Exception):
+                    await client.close()
+
+        return self._unavailable(detail)
 
     def _unavailable(self, detail: str) -> Verdict:
         self.session.log(f"daemon unavailable ({detail}); failing {self.on_unavailable.value}")
@@ -372,9 +399,14 @@ async def run(
     try:
         await client.connect()
         session.log(f"connected to the daemon at {socket}")
-    except (IpcError, NotImplementedError) as exc:
-        session.log(f"no daemon at {socket} ({exc}); gated requests will be refused")
+    except NotImplementedError as exc:
+        # No transport on this platform at all, so there is nothing to retry.
+        session.log(f"daemon unsupported here ({exc}); gated requests will be refused")
         client = None
+    except IpcError as exc:
+        # Keep the client: it reconnects when a request actually needs it, so
+        # starting the daemon later does not mean restarting Desktop.
+        session.log(f"no daemon at {socket} yet ({exc}); will retry on demand")
 
     proxy = Proxy(
         session,

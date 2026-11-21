@@ -214,9 +214,23 @@ class DaemonClient:
         self._pending: dict[str, asyncio.Future[Verdict]] = {}
         self._write_lock: asyncio.Lock = asyncio.Lock()
 
+    @property
+    def connected(self) -> bool:
+        writer = self._writer
+        return writer is not None and not writer.is_closing()
+
+    async def ensure_connected(self) -> None:
+        """Connect if we are not already. Safe to call on every request."""
+        if self.connected:
+            return
+        await self.connect()
+
     async def connect(self) -> None:
         require_unix()
         check_socket_path(self.path)
+        # Re-callable: a daemon restart leaves a dead reader task and a closing
+        # writer behind, and both have to go before we open a new connection.
+        await self._teardown()
         try:
             reader, writer = await asyncio.open_unix_connection(str(self.path))
         except OSError as exc:
@@ -246,15 +260,24 @@ class DaemonClient:
             await self._send({"type": "withdraw", "id": decision_id})
 
     async def close(self) -> None:
+        await self._teardown()
+
+    async def _teardown(self) -> None:
         if self._reader_task is not None:
             self._reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
-        if self._writer is not None and not self._writer.is_closing():
-            self._writer.close()
+            self._reader_task = None
+
+        writer = self._writer
+        if writer is not None:
+            if not writer.is_closing():
+                writer.close()
             with contextlib.suppress(OSError, asyncio.CancelledError):
-                await self._writer.wait_closed()
-        self._fail_pending(IpcError("client closed"))
+                await writer.wait_closed()
+            self._writer = None
+
+        self._fail_pending(IpcError("connection closed"))
 
     async def _send(self, payload: JSONObject) -> None:
         writer = self._writer
@@ -285,6 +308,12 @@ class DaemonClient:
             # The daemon going away must not leave callers waiting forever.
             # They fail closed instead.
             self._fail_pending(IpcError("daemon closed the connection"))
+            # Mark the connection dead so `connected` is honest and the next
+            # request reconnects. Losing the read side does not close the write
+            # side on its own, so without this we would look connected forever.
+            writer = self._writer
+            if writer is not None and not writer.is_closing():
+                writer.close()
 
     def _fail_pending(self, exc: Exception) -> None:
         for future in self._pending.values():

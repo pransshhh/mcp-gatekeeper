@@ -302,3 +302,66 @@ async def test_pending_callers_fail_closed_when_the_daemon_dies(tmp_path: Path):
         await asyncio.wait_for(asking, timeout=5)
 
     await client.close()
+
+
+# --------------------------------------------------------------------------
+# reconnection
+# --------------------------------------------------------------------------
+
+
+async def test_connected_reflects_the_connection(tmp_path: Path):
+    path = tmp_path / "test.sock"
+    async with running_daemon(path):
+        client = DaemonClient(path, "demo")
+        assert not client.connected
+
+        await client.connect()
+        assert client.connected
+
+        await client.close()
+        assert not client.connected
+
+
+async def test_reconnects_after_the_daemon_restarts(tmp_path: Path):
+    # The operational point: restarting the daemon must not require restarting
+    # Claude Desktop.
+    path = tmp_path / "test.sock"
+    client = DaemonClient(path, "demo")
+
+    async with running_daemon(path):
+        await client.connect()
+        assert (await client.ask(a_request())).allowed
+
+    await asyncio.sleep(0.2)
+
+    async with running_daemon(path):
+        # The old connection is a corpse, so drop it the way the interceptor
+        # does on a failed ask, then reconnect.
+        await client.close()
+        await client.ensure_connected()
+        assert (await client.ask(a_request())).allowed
+
+    await client.close()
+
+
+async def test_can_connect_to_a_daemon_that_started_late(tmp_path: Path):
+    path = tmp_path / "test.sock"
+    client = DaemonClient(path, "demo")
+
+    # Nothing listening yet.
+    with pytest.raises(IpcError):
+        await client.ensure_connected()
+
+    async with running_daemon(path):
+        await client.ensure_connected()
+        assert (await client.ask(a_request())).allowed
+
+    await client.close()
+
+
+async def test_ensure_connected_is_cheap_when_already_connected(tmp_path: Path):
+    path = tmp_path / "test.sock"
+    async with running_daemon(path), connected(path) as client:
+        await client.ensure_connected()
+        await client.ensure_connected()
+        assert (await client.ask(a_request())).allowed
