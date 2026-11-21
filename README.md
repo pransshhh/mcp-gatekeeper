@@ -16,7 +16,7 @@ Blocking means the call is never executed, not that its result is hidden:
 
 ## Demo
 
-
+Video: [mcp-gatekeeper-demo](https://drive.google.com/file/d/1g5NaM51yIuO-9UYy-s2mQm2tydhTivXk/view?usp=sharing)
 
 ## Requirements
 
@@ -71,6 +71,18 @@ To watch it without clicking anything, add `--auto block` or `--auto allow` to
 the daemon. That skips the popup entirely and answers everything the same way,
 which is also what the test suite uses.
 
+Pass `--concurrent` to the client to fire only the two simultaneous calls and
+skip the single ones:
+
+```bash
+uv run python tests/fakes/client.py --concurrent -- \
+  uv run python -m mcp_gatekeeper.interceptor --server-name demo --socket /tmp/gk.sock -- \
+  uv run python tests/fakes/server.py
+```
+
+Both prompts appear together, counted "1 of 2", and the timings show the fast
+call returning while the slow one is still outstanding.
+
 ## Use it with Claude Desktop
 
 ### 1. Have an MCP server configured
@@ -111,10 +123,11 @@ uv run mcp-gatekeeper status --socket /tmp/gk.sock
 uv run python -m mcp_gatekeeper.daemon --socket /tmp/gk.sock
 ```
 
-Pass the same `--socket` you gave `install`. Start it **before** Claude
-Desktop, or the first tool call fails closed with "could not reach the
-approval daemon", which is correct behaviour, just not what you want on a
-first run.
+Pass the same `--socket` you gave `install`. Order does not matter: the
+interceptor connects on demand, so starting the daemon afterwards, or
+restarting it later, works without restarting Claude Desktop. Calls made
+while it is down fail closed with "could not reach the approval daemon",
+which is the intended behaviour.
 
 Keep this in a terminal that is not inside Claude Desktop. Quitting Desktop
 would otherwise take the daemon with it.
@@ -242,8 +255,8 @@ intercepted by anything running on your machine, with or without a tunnel.
 
 - Claude Web is not covered yet, as above.
 - The daemon runs in a terminal. There is no tray icon or service mode, so
-closing that terminal stops the gatekeeper and the next tool call fails
-closed.
+closing that terminal stops the gatekeeper and calls fail closed until it is
+started again. It does recover on its own once the daemon is back.
 - "Always allow" is scoped to a server and tool, not to arguments. Always
 allowing `read_file` therefore permits reading any path, which is why "just
 this once" is the default choice in the popup.
